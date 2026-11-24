@@ -8,22 +8,25 @@ import re
 import gradio as gr
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors, types
 from wordbook import delete_word, load_entries, save_word
 
 
-FONT_DIRECTORY = Path(__file__).resolve().parent / "assets" / "fonts"
-gr.set_static_paths(paths=[FONT_DIRECTORY])
+ASSET_DIRECTORY = Path(__file__).resolve().parent / "assets"
+FONT_DIRECTORY = ASSET_DIRECTORY / "fonts"
+TITLE_CHICK_PATH = ASSET_DIRECTORY / "title-chick.png"
+gr.set_static_paths(paths=[FONT_DIRECTORY, TITLE_CHICK_PATH])
 
 
-def font_url(filename):
-    return "/gradio_api/file=" + quote((FONT_DIRECTORY / filename).as_posix(), safe="/:")
+def asset_url(path):
+    return "/gradio_api/file=" + quote(path.as_posix(), safe="/:")
 
 
 # 한글 범위에만 적용하므로 일본어·한자는 기존 글꼴을 사용한다.
-FONT_STYLES = f"""
+ASSET_STYLES = f"""
 @font-face {{
     font-family: "NanumSquareRoundKorean";
-    src: url("{font_url('NanumSquareRoundOTFR.otf')}") format("opentype");
+    src: url("{asset_url(FONT_DIRECTORY / 'NanumSquareRoundOTFR.otf')}") format("opentype");
     font-style: normal;
     font-weight: 400;
     font-display: swap;
@@ -32,11 +35,22 @@ FONT_STYLES = f"""
 
 @font-face {{
     font-family: "NanumSquareRoundKorean";
-    src: url("{font_url('NanumSquareRoundOTFB.otf')}") format("opentype");
+    src: url("{asset_url(FONT_DIRECTORY / 'NanumSquareRoundOTFB.otf')}") format("opentype");
     font-style: normal;
     font-weight: 700;
     font-display: swap;
     unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}}
+
+/* 제목 옆에는 원본 그림의 흰 여백을 잘라 병아리만 표시한다. */
+#app-title h1::after {{
+    content: "";
+    display: inline-block;
+    width: 44px;
+    height: 50px;
+    margin-inline-start: 8px;
+    vertical-align: middle;
+    background: url("{asset_url(TITLE_CHICK_PATH)}") no-repeat 49% 57% / 95px auto;
 }}
 """
 
@@ -68,7 +82,26 @@ def create_theme():
 
 
 load_dotenv()
-client = genai.Client()
+client = genai.Client(
+    http_options=types.HttpOptions(
+        timeout=20_000,
+        retry_options=types.HttpRetryOptions(
+            attempts=3,
+            initial_delay=1.0,
+            max_delay=3.0,
+            jitter=0.5,
+            http_status_codes=[500, 502, 503, 504],
+        ),
+    ),
+)
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+GEMINI_ERROR_MESSAGES = {
+    401: "Gemini API 키를 확인해 주세요.",
+    403: "Gemini API 키의 프로젝트 권한을 확인해 주세요.",
+    429: "Gemini API 사용 한도에 도달했어요. 잠시 후 다시 시도해 주세요.",
+    503: "Gemini 서버가 혼잡해요. 잠시 후 다시 시도해 주세요.",
+    504: "Gemini 서버 응답이 늦어졌어요. 잠시 후 다시 시도해 주세요.",
+}
 
 candidate_schema = {
     "type": "object",
@@ -91,7 +124,7 @@ candidate_schema = {
 
 def study_word(text):
     response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
+        model=GEMINI_MODEL,
         contents=f"""
 너는 한국인을 위한 일본어 학습 도우미야.
 선택한 단어와 의미에 맞는 학습 정보를 제공해.
@@ -156,12 +189,12 @@ def search_candidates(text):
         choices=[], value=None, visible=False
     )
 
-    if not text.strip():
+    if not text or not text.strip():
         return [], empty_dropdown, "단어를 입력해 주세요."
 
     try:
         response = client.models.generate_content(
-            model="gemini-3.5-flash-lite",
+            model=GEMINI_MODEL,
             contents=f"""
 한국인을 위한 일본어 단어 검색이야.
 입력에 해당하는 일본어 단어 후보를 찾아줘.
@@ -206,24 +239,39 @@ def search_candidates(text):
         )
         return candidates, dropdown, "아래 후보에서 원하는 뜻을 선택해 주세요."
 
+    except errors.APIError as error:
+        return [], empty_dropdown, gemini_error_message(error)
     except Exception:
         traceback.print_exc()
-        return [], empty_dropdown, "일본어가 아닌 것 같아요 다시한번 입력부탁드려요!."
+        return [], empty_dropdown, "검색 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요."
 
 
 def select_candidate(selected, candidates):
     if selected is None:
         return "후보를 먼저 선택해 주세요."
 
-    index = int(selected)
+    try:
+        index = int(selected)
+    except (TypeError, ValueError):
+        return "후보를 다시 검색해 주세요."
     if index < 0 or index >= len(candidates):
         return "후보를 다시 검색해 주세요."
 
     try:
         return explain_candidate(candidates[index])
+    except errors.APIError as error:
+        return gemini_error_message(error)
     except Exception:
         traceback.print_exc()
         return "상세 정보를 가져오지 못했어요. 터미널을 확인해 주세요."
+
+
+def gemini_error_message(error):
+    print(f"Gemini API 오류 HTTP {error.code} ({error.status})")
+    return GEMINI_ERROR_MESSAGES.get(
+        error.code,
+        f"Gemini 요청이 실패했어요 (HTTP {error.code}). 잠시 후 다시 시도해 주세요.",
+    )
 
 
 def wordbook_view(entries, selected_id=None):
@@ -389,7 +437,7 @@ def show_study(data, title="학습 결과"):
 
 
 with gr.Blocks(fill_width=True) as app:
-    gr.Markdown("# 마나비칸지", elem_id="app-title")
+    gr.Markdown("# まなび漢字", elem_id="app-title")
 
     candidates_state = gr.State([])
     result_output = gr.State(None)
@@ -412,7 +460,7 @@ with gr.Blocks(fill_width=True) as app:
             elem_id="word-input",
         )
         search_button = gr.Button(
-            "검색", variant="primary", elem_id="search-button",
+            "검색(検索)", variant="primary", elem_id="search-button",
         )
         candidate_dropdown = gr.Dropdown(
             label="원하는 뜻 선택",
@@ -495,7 +543,8 @@ with gr.Blocks(fill_width=True) as app:
     back_to_search_button.click(
         fn=show_search_page, inputs=[], outputs=[search_page, wordbook_page],
     )
-    search_button.click(
+    gr.on(
+        triggers=[search_button.click, word_input.submit],
         fn=search_candidates, inputs=[word_input],
         outputs=[candidates_state, candidate_dropdown, result_output],
     ).then(fn=lambda: "", inputs=[], outputs=[search_save_status])
@@ -517,7 +566,7 @@ if __name__ == "__main__":
     app.launch(
         share=True,
         theme=create_theme(),
-        css=FONT_STYLES + """
+        css=ASSET_STYLES + """
         .gradio-container {
             --study-font-increase: 2pt;
             --manabi-green: #63CC63;
@@ -538,6 +587,10 @@ if __name__ == "__main__":
             max-width: 820px !important;
             margin-left: auto !important;
             margin-right: auto !important;
+        }
+
+        .gradio-container:has(#search-page:not(.hide)) #app-title {
+            margin-top: clamp(0px, (100dvh - 560px) / 3, min(8vw, 96px));
         }
 
 .gradio-container {
@@ -601,6 +654,11 @@ if __name__ == "__main__":
             letter-spacing: -0.04em;
         }
 
+        #app-title h1 {
+            font-size: calc(32px + 2pt) !important;
+            font-weight: 800;
+        }
+
         .gradio-container .prose h2 {
             font-size: 25px !important;
         }
@@ -645,6 +703,8 @@ if __name__ == "__main__":
         }
 
         .page-nav-button {
+            --button-secondary-background-fill: var(--primary-500);
+            --button-secondary-background-fill-hover: var(--primary-500);
             width: auto !important;
             min-width: 150px !important;
             max-width: 190px !important;
