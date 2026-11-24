@@ -48,6 +48,11 @@ def create_theme():
         neutral_hue="slate",
         spacing_size="sm",
         radius_size="lg",
+        # Gradio 기본 글자 크기에 3pt(4px)를 더한다.
+        text_size=gr.themes.Size(
+            xxs="13px", xs="14px", sm="16px", md="18px",
+            lg="20px", xl="26px", xxl="30px",
+        ),
         font=[
             gr.themes.Font("NanumSquareRoundKorean"),
             gr.themes.Font("Malgun Gothic"),
@@ -592,16 +597,16 @@ if __name__ == "__main__":
         }
 
         .gradio-container .prose h1 {
-            font-size: 28px !important;
+            font-size: 32px !important;
             letter-spacing: -0.04em;
         }
 
         .gradio-container .prose h2 {
-            font-size: 21px !important;
+            font-size: 25px !important;
         }
 
         .gradio-container .prose h3 {
-            font-size: 19px !important;
+            font-size: 23px !important;
         }
 
         .gradio-container .prose p {
